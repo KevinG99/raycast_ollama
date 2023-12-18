@@ -12,6 +12,7 @@ import {
   ErrorRaycastApiNoTextCopied,
   ErrorRaycastModelNotConfiguredOnLocalStorage,
   ErrorOllamaModelNotMultimodal,
+  ErrorConventionalCommitNoDifferences,
 } from "../errors";
 import { OllamaApiGenerate, OllamaApiTags } from "../ollama";
 import { SetModelView } from "./SetModelView";
@@ -20,6 +21,9 @@ import { Action, ActionPanel, Detail, Icon, LocalStorage, Toast, showToast } fro
 import { getSelectedText, Clipboard, getPreferenceValues } from "@raycast/api";
 import { usePromise } from "@raycast/utils";
 import { GetImage, GetModel } from "../common";
+import { getGitDiff } from "../git";
+import { checkAndShowRepositoryPath, SetRepositoryView } from "./SetGitRepositoryViewProps";
+import { useRef, useState } from "react";
 
 const preferences = getPreferenceValues();
 
@@ -31,6 +35,10 @@ const defaultPrompt = new Map([
   [
     "codeexplain",
     "Act as a developer. Explain the following code block step by step.\n\nOutput only with the commented code.\n",
+  ],
+  [
+    "conventionalCommits",
+    "Review the git diff provided at the end and create a concise conventional commit message. The message should identify the primary type of change (e.g., 'feat', 'fix', 'docs', 'style', 'refactor', 'test', 'chore') and briefly summarize the main changes. Focus on major modifications and avoid delving into minor details. The commit message should be in standard conventional commit format and should not exceed a few sentences."
   ],
   [
     "confident",
@@ -103,6 +111,7 @@ export function AnswerView(props: props): JSX.Element {
     React.Dispatch<React.SetStateAction<OllamaApiGenerateResponse>>
   ] = React.useState({} as OllamaApiGenerateResponse);
   const [showAnswerMetadata, setShowAnswerMetadata] = React.useState(false);
+  const repoPathRef = useRef<string>("");
 
   /**
    * Handle Error from Ollama API.
@@ -212,7 +221,10 @@ export function AnswerView(props: props): JSX.Element {
                         });
                       });
                   } else {
-                    await showToast({ style: Toast.Style.Failure, title: ErrorRaycastApiNoTextSelected.message });
+                    await showToast({
+                      style: Toast.Style.Failure,
+                      title: ErrorRaycastApiNoTextSelected.message,
+                    });
                   }
                 });
               break;
@@ -235,8 +247,25 @@ export function AnswerView(props: props): JSX.Element {
                         });
                       });
                   } else {
-                    await showToast({ style: Toast.Style.Failure, title: ErrorRaycastApiNoTextCopied.message });
+                    await showToast({
+                      style: Toast.Style.Failure,
+                      title: ErrorRaycastApiNoTextCopied.message,
+                    });
                   }
+                });
+              break;
+            case "GitDiff":
+              getGitDiff(repoPathRef.current)
+                .then((diff) => {
+                  if (!diff) throw new Error("No Diff");
+                  Inference(diff.join());
+                })
+                .catch(async (error) => {
+                  console.error(error);
+                  await showToast({
+                    style: Toast.Style.Failure,
+                    title: ErrorConventionalCommitNoDifferences.message,
+                  });
                 });
               break;
           }
@@ -250,10 +279,26 @@ export function AnswerView(props: props): JSX.Element {
 
   const [showSelectModelForm, setShowSelectModelForm]: [boolean, React.Dispatch<React.SetStateAction<boolean>>] =
     React.useState(false);
+  const [showSelectRepositoryForm, setShowSelectRepositoryForm]: [
+    boolean,
+    React.Dispatch<React.SetStateAction<boolean>>
+  ] = React.useState(false);
 
   React.useEffect(() => {
     if (!showSelectModelForm) RevalidateModelGenerate();
   }, [showSelectModelForm]);
+
+  React.useEffect(() => {
+    if (!showSelectRepositoryForm)
+      checkAndShowRepositoryPath()
+        .then((path) => {
+          setShowSelectRepositoryForm(false);
+          repoPathRef.current = path;
+        })
+        .catch(() => {
+          setShowSelectRepositoryForm(true);
+        });
+  }, [showSelectRepositoryForm]);
 
   if (showSelectModelForm && props.command)
     return (
@@ -263,6 +308,8 @@ export function AnswerView(props: props): JSX.Element {
         Families={props.image ? ["clip"] : undefined}
       />
     );
+  if (showSelectRepositoryForm && props.command == "conventionalCommits")
+    return <SetRepositoryView ShowRepositoryView={setShowSelectRepositoryForm} />;
 
   /**
    * Answer Action Menu.
@@ -285,6 +332,21 @@ export function AnswerView(props: props): JSX.Element {
             icon={Icon.Box}
             onAction={() => setShowSelectModelForm(true)}
             shortcut={{ modifiers: ["cmd"], key: "m" }}
+          />
+        )}
+        {props.command === "conventionalCommits" && (
+          <Action
+            title="Set Repository Path"
+            icon={Icon.Folder}
+            onAction={() => setShowSelectRepositoryForm(true)}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "m" }}
+          />
+        )}
+        {props.command === "conventionalCommits" && (
+          <Action.CopyToClipboard
+            title="Copy Commit To Clipboard"
+            shortcut={{ modifiers: ["shift", "opt"], key: "enter" }}
+            content={Array.from(answer.matchAll(/```([^`]+)```/g), (m) => m[1]).join("\n")}
           />
         )}
       </ActionPanel>
